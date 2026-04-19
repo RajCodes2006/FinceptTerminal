@@ -20,38 +20,70 @@ Output JSON:
 
 import sys
 from exchange_client import (
-    make_exchange, output_success, output_error,
-    parse_credentials_from_stdin, run_with_error_handling,
+    make_exchange,
+    output_success,
+    output_error,
+    parse_credentials_from_stdin,
+    run_with_error_handling,
 )
+
+
+def safe_float(x):
+    try:
+        return float(x or 0)
+    except Exception:
+        return 0.0
 
 
 @run_with_error_handling
 def main():
+    # ---- ARG CHECK ----
     if len(sys.argv) < 2:
         output_error("Usage: fetch_balance.py <exchange_id>", "INVALID_ARGS")
 
     exchange_id = sys.argv[1]
+
+    # ---- READ CREDS ----
     credentials = parse_credentials_from_stdin()
 
-    if not credentials.get("api_key"):
-        output_error("API key required. Pass credentials via stdin JSON.", "AUTH_ERROR")
+    if not credentials.get("api_key") or not credentials.get("secret"):
+        output_error("API key and secret required.", "AUTH_ERROR")
 
+    # ---- CREATE EXCHANGE ----
     exchange = make_exchange(exchange_id, credentials)
+
+    # ---- FETCH BALANCE ----
     balance = exchange.fetch_balance()
 
-    # Filter to non-zero balances
-    balances = []
-    for currency, data in balance.items():
-        if isinstance(data, dict) and "total" in data:
-            total = data.get("total", 0)
-            if total and float(total) > 0:
-                balances.append({
-                    "currency": currency,
-                    "free": float(data.get("free", 0) or 0),
-                    "used": float(data.get("used", 0) or 0),
-                    "total": float(total),
-                })
+    if not isinstance(balance, dict):
+        output_error("Invalid balance response from exchange.", "EXCHANGE_ERROR")
 
+    # ---- SAFE EXTRACTION ----
+    totals = balance.get("total", {}) or {}
+    frees = balance.get("free", {}) or {}
+    useds = balance.get("used", {}) or {}
+
+    if not isinstance(totals, dict):
+        output_error("Malformed balance structure.", "EXCHANGE_ERROR")
+
+    # ---- FILTER NON-ZERO ----
+    balances = []
+
+    for currency, total in totals.items():
+        total_val = safe_float(total)
+
+        if total_val > 0:
+            balances.append({
+                "currency": currency,
+                "free": safe_float(frees.get(currency)),
+                "used": safe_float(useds.get(currency)),
+                "total": total_val,
+            })
+
+    # ---- SORT (HIGH → LOW) ----
+    balances.sort(key=lambda x: x["total"], reverse=True)
+
+    # ---- OUTPUT ----
     output_success({
         "exchange": exchange_id,
         "balances": balances,
